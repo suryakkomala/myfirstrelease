@@ -1,0 +1,212 @@
+// Import Dynatrace library //
+
+@Library('dynatrace@master') _
+def event = new com.dynatrace.ace.Event()
+
+def tagMatchRules =[ [
+    meTypes : ["HOST"],
+    entityId :["HOST-8959DEAE74DB0FAE"],
+    tags : [ ["context":"CONTEXTLESS", "key":"NON-Production"],
+             ["context":"CONTEXTLESS", "key":"Midrange"] ]
+]]
+
+/// PIPELINE START ///
+
+pipeline {
+    agent none
+    parameters {
+        choice(
+            choices: ['NGSEDSService' , 'NGSWidgets' , 'NGSCMREST' , 'NGSCMSupportEAR'],
+            description: 'SolutionToBuild',
+            name: 'SolutionToBuild')
+    }
+    environment {
+        Artifactory_Token = credentials('ICMFrog')
+        DT_TENANT_URL = 'https://xxr75078.live.dynatrace.com/'
+        DT_API_TOKEN  = credentials('DynatraceJenkins')
+    }    
+    options { skipDefaultCheckout(true) }
+    stages
+    {
+    stage("Builds") {
+      agent {
+           docker {
+                image 'maven:3.8-ibmjava-8'
+                args '-u root'
+           }
+        }
+      stages {
+        stage('CloneRepo & InstallDependency') {
+            steps {
+           // cleanWs()
+            sh 'rm -rf *'
+            checkout BbS(branches: [[name: 'DevSecOps_POC']], credentialsId: 'BItBucketICM', id: 'e20298a6-1091-4b2a-bd63-9d64c625b31a', projectName: 'DCCM', repositoryName: 'ICM', serverId: 'c1c83600-2019-4693-830d-fc79ff046527')
+            sh ''' ls
+            mvn install:install-file -Dfile=buildlibs/Jace-5.5.4.jar -DgroupId=com.filenet -DartifactId=Jace -Dversion=5.5.4 -Dpackaging=jar
+            mvn install:install-file -Dfile=buildlibs/pe-5.5.4.jar -DgroupId=com.filenet -DartifactId=pe -Dversion=5.5.4 -Dpackaging=jar
+            mvn install:install-file -Dfile=buildlibs/api-1.0.jar -DgroupId=com.dcg.icmsa -DartifactId=api -Dversion=1.0 -Dpackaging=jar '''
+        }
+        }
+        stage('DateConverter') {
+			when { anyOf {
+				expression { params.SolutionToBuild == 'NGSCMSupportEAR'}
+				expression { params.SolutionToBuild == 'NGSCMREST'}
+			}
+			}
+			steps {
+            dir('CaseManagement/RapidCase/DateConverter') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn install:install-file -Dfile=target/DateConverter-0.0.1-SNAPSHOT.jar -DgroupId=com.ngsmedicare.icm -DartifactId=DateConverter -Dversion=0.0.1-SNAPSHOT -Dpackaging=jar
+            '''
+            }
+        }
+        }        
+        stage('NGSCommons') {
+			when {anyOf {
+				expression { params.SolutionToBuild == 'NGSCMSupportEAR'}
+				expression { params.SolutionToBuild == 'NGSCMREST'}
+				expression { params.SolutionToBuild == 'NGSEDSService'} }
+			} 
+            steps {
+            catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+            dir ('CaseManagement/RapidCase/NGSCMSupportProject/NGSCommons') {
+            sh '''
+            mvn compile 
+            mvn package
+            mvn install:install-file -Dfile=target/NGSCommons-0.0.1-SNAPSHOT.jar -DgroupId=com.ngs.casemngt -DartifactId=NGSCommons -Dversion=0.0.1-SNAPSHOT -Dpackaging=jar'''
+            }
+        }
+        }
+        }
+        stage('NGSEDSService') {
+            when { expression { params.SolutionToBuild == 'NGSEDSService' } }            
+            steps {
+            dir('CaseManagement/RapidCase/NGSEDSService') {
+            sh '''
+            ls
+            mvn clean
+            ls
+            mvn compile
+            mvn package
+            mvn install:install-file -Dfile=target/NGSEDSService.war -DgroupId=com.ngs.icm.eds -DartifactId=NGSEDSService -Dversion=0.0.1-SNAPSHOT -Dpackaging=war
+            mvn -f pom-ear.xml package '''
+            stash(includes: 'target/*.ear', name:'BuildArtifacts', useDefaultExcludes: 'false')  
+            archiveArtifacts artifacts: 'target/*', followSymlinks: false			
+            }
+        }
+        }
+        stage('NGSCMREST') {
+            when { expression { params.SolutionToBuild == 'NGSCMREST' } }            
+            steps {
+            sh '''
+            cd ICMBuildScripts/lib/
+            mvn install:install-file -Dfile=ojdbc7.jar -DgroupId=com.oracle -DartifactId=ojdbc7 -Dversion=12.1.0 -Dpackaging=jar
+            cd ../../CaseManagement/RapidCase/ActivationFTPMainframe
+            mvn clean
+            mvn compile
+            mvn package
+            mvn install:install-file -Dfile=target/ActivationFTPMainframe-0.0.1-SNAPSHOT.jar -DgroupId=com.ngs.mainframe -DartifactId=ActivationFTPMainframe -Dversion=0.0.1-SNAPSHOT -Dpackaging=jar'''
+            dir('CaseManagement/RapidCase/NGSCMSupportProject/NGSCMREST') {
+            sh '''
+            mvn compile
+            mvn package
+            mvn install:install-file -Dfile=target/NGSCMREST.war -DgroupId=com.ngs.casemngt.rest -DartifactId=NGSCMREST -Dversion=0.0.1-SNAPSHOT -Dpackaging=war
+            mvn -f pom-ear.xml package
+            ls -l target/'''
+            stash(includes: 'target/*.ear', name:'BuildArtifacts', useDefaultExcludes: 'false') 
+            archiveArtifacts artifacts: 'target/*', followSymlinks: false			
+            }
+            }
+        }
+        stage('NGSWidgets') {
+            when {expression { params.SolutionToBuild == 'NGSWidgets' }}   
+            steps {
+            dir('CaseManagement/RapidCase/NGSWidgets') {
+            sh '''
+            mvn clean
+            mvn install:install-file -Dfile=lib/j2ee.jar -DgroupId=javax.j2ee -DartifactId=j2ee -Dversion=1.4 -Dpackaging=jar
+            mvn install:install-file -Dfile=lib/navigatorAPI.jar -DgroupId=com.ibm.ecm.extension -DartifactId=com.ibm.ecm.extension -Dversion=1.0 -Dpackaging=jar            
+            mvn compile
+            mvn package
+            mvn -f pom-war.xml package
+            mvn install:install-file -Dfile=target/NGSWidgets.war -DgroupId=com.ngs.casemngt -DartifactId=NGSWidgetsPluginWar -Dversion=0.0.1-SNAPSHOT -Dpackaging=war
+            mvn -f pom-ear.xml package
+            mvn -f pom-assembly.xml package'''
+            stash(includes: 'target/*.zip', name:'BuildArtifacts2', useDefaultExcludes: 'false')
+            stash(includes: 'target/*.ear', name:'BuildArtifacts', useDefaultExcludes: 'false') 
+            archiveArtifacts artifacts: 'target/*', followSymlinks: false			
+            }
+        }
+        }
+        stage('NGSCMSupportEAR') {
+			when { 
+				expression { params.SolutionToBuild == 'NGSCMSupportEAR' } 
+			}            
+            steps {
+            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+            sh '''
+            cd CaseManagement/RapidCase/NGSCMSupportProject/NGSCMSupport
+            mvn clean
+            mvn compile
+            mvn package
+            mvn install:install-file -Dfile=target/NGSCMSupport.war -DgroupId=com.ngs.casemngt -DartifactId=NGSCMSupport -Dversion=0.0.1-SNAPSHOT -Dpackaging=war'''
+            dir ('CaseManagement/RapidCase/NGSCMSupportEAR') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package '''
+            stash(includes: 'target/*.ear', name:'BuildArtifacts', useDefaultExcludes: 'false')
+			archiveArtifacts artifacts: 'target/*', followSymlinks: false
+            }            
+            }
+        }
+        }
+    }    
+    }
+    stage("UploadArtifact") {
+      agent {
+         docker { image 'releases-docker.jfrog.io/jfrog/jfrog-cli-v2:2.2.0'
+                  reuseNode true } }
+      steps{            
+	        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+            cleanWs(cleanWhenNotBuilt: false,
+                    deleteDirs: true,
+                    disableDeferredWipeout: true,
+                    notFailBuild: true)
+            sh 'rm -rf target/*'        
+            unstash 'BuildArtifacts'
+            //unstash 'BuildArtifacts2'
+            sh ''' 
+            ls
+            ls -l target/
+            jfrog rt upload --url http://kyettsjenlx01v:8082/artifactory/ --access-token ${Artifactory_Token} "target/(*)" DCCM-ICM/WebSphere/ '''      
+        }
+        }
+    }
+	}
+post{
+    always {
+        script
+        {
+            def status = event.pushDynatraceEvent   (
+              eventType: "CUSTOM_INFO",  
+              tagRule: tagMatchRules,
+              description:'This is WebSphere Manual Build',
+              //deploymentName: "${env.JOB_NAME}",
+              //deploymentVersion: "${env.BUILD_NUMBER}",
+              //deploymentProject: "myDeploymentProject",
+             // remediationAction: "myRemediationAction",
+              customProperties : [
+                  "Jenkins JOB_NAME": "${env.JOB_NAME}",
+                  "Jenkins BUILD_NUMBER": "${env.BUILD_NUMBER}",
+                  "Build Status": "${currentBuild.currentResult}",
+                  "Build Duration": "${currentBuild.durationString}"
+              ]
+            )
+            }
+    }
+}
+}

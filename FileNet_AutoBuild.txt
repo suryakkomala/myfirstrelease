@@ -1,0 +1,215 @@
+// Import Dynatrace library //
+
+@Library('dynatrace@master') _
+def event = new com.dynatrace.ace.Event()
+
+def tagMatchRules =[ [
+    meTypes : ["HOST"],
+    entityId :["HOST-8959DEAE74DB0FAE"],
+    tags : [ ["context":"CONTEXTLESS", "key":"NON-Production"],
+             ["context":"CONTEXTLESS", "key":"Midrange"] ]
+]]
+
+/// PIPELINE START ///
+
+pipeline {
+    agent any
+    environment {
+        Artifactory_Token = credentials('ICMFrog')
+        DT_TENANT_URL = 'https://xxr75078.live.dynatrace.com/'
+        DT_API_TOKEN  = credentials('DynatraceJenkins')
+    }      
+    options { skipDefaultCheckout(true) }
+    stages
+    {
+    stage("Builds") {
+      agent {
+           docker {
+                image 'maven:3.8-ibmjava-8'
+                args '-u root'
+           }
+        }  
+	  when { anyOf {
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCommons/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMServices/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSInternalRequestComponents/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMAPPMASComponent/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSGenericServices/**"
+			changeset "CaseManagement/RapidCase/NGSOCREventHandler/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMDepartmentServices/**"
+			changeset "CaseManagement/RapidCase/NGSOCRService/**" 
+            } 
+            }
+    stages
+    {
+        stage('CloneRepo & InstallDependency') {
+            steps {
+           // cleanWs()
+            sh 'rm -rf *'
+            checkout BbS(branches: [[name: 'DevSecOps_POC']], credentialsId: 'BItBucketICM', id: 'e20298a6-1091-4b2a-bd63-9d64c625b31a', projectName: 'DCCM', repositoryName: 'ICM', serverId: 'c1c83600-2019-4693-830d-fc79ff046527')
+            sh '''
+            mvn install:install-file -Dfile=buildlibs/Jace-5.5.4.jar -DgroupId=com.filenet -DartifactId=Jace -Dversion=5.5.4 -Dpackaging=jar
+            mvn install:install-file -Dfile=buildlibs/pe-5.5.4.jar -DgroupId=com.filenet -DartifactId=pe -Dversion=5.5.4 -Dpackaging=jar
+            mvn install:install-file -Dfile=buildlibs/api-1.0.jar -DgroupId=com.dcg.icmsa -DartifactId=api -Dversion=1.0 -Dpackaging=jar '''
+        }
+        }
+        stage('NGSCommons') {
+            steps {
+            dir ('CaseManagement/RapidCase/NGSCMSupportProject/NGSCommons') {
+            sh '''
+            mvn compile 
+            mvn package
+            mvn install:install-file -Dfile=target/NGSCommons-0.0.1-SNAPSHOT.jar -DgroupId=com.ngs.casemngt -DartifactId=NGSCommons -Dversion=0.0.1-SNAPSHOT -Dpackaging=jar'''
+            }
+        }
+        }
+        stage('NGSCMServices') {
+            when { changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMServices/**" }            
+            steps {
+            dir('CaseManagement/RapidCase/NGSCMSupportProject/NGSCMServices') {
+            sh '''
+            mvn clean
+            ls
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package '''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false            
+            }
+        }
+        }
+        stage('NGSInternalRequestComponents') {
+            when { changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSInternalRequestComponents/**" }            
+            steps {
+            sh '''
+            cd ICMBuildScripts/lib/
+            mvn install:install-file -Dfile=jd-gui-1.4.0.jar -DgroupId=org.jd -DartifactId=jd-gui -Dversion=1.4.0 -Dpackaging=jar'''            
+            dir('CaseManagement/RapidCase/NGSCMSupportProject/NGSInternalRequestComponents') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package '''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false            
+            }
+        }
+        }
+        stage('NGSMAPPMASComponent') {
+            when { changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMAPPMASComponent/**" }            
+            steps {
+            dir('CaseManagement/RapidCase/NGSCMSupportProject/NGSCMAPPMASComponent/') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package
+            mvn -f pom-assembly-config.xml package'''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false
+            }
+        }
+        }
+        stage('NGSGenericServices') {
+            when { changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSGenericServices/**"}            
+            steps {
+            dir('CaseManagement/RapidCase/NGSCMSupportProject/NGSGenericServices') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package'''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false
+            }
+        }
+        }
+        stage('NGSOCREventHandler') {
+            when { changeset "CaseManagement/RapidCase/NGSOCREventHandler/**"}            
+            steps {
+            dir('CaseManagement/RapidCase/NGSOCREventHandler') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package'''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false
+            }
+        }
+        }
+        stage('NGSCMDepartmentServices') {
+            when { changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMDepartmentServices/**"}            
+            steps {
+            dir('CaseManagement/RapidCase/NGSCMSupportProject/NGSCMDepartmentServices') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package'''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false
+            }
+        }
+        }
+        stage('NGSOCRService') {
+            when { changeset "CaseManagement/RapidCase/NGSOCRService/**"}            
+            steps {
+            dir('CaseManagement/RapidCase/NGSOCRService') {
+            sh '''
+            mvn clean
+            mvn compile
+            mvn package
+            mvn -f pom-assembly.xml package'''
+            archiveArtifacts artifacts: 'target/*.zip', followSymlinks: false
+            }
+            }
+        }
+    }
+    }
+    stage("UploadArtifact & DynatraceEvents"){
+      agent {
+         docker {
+            image 'releases-docker.jfrog.io/jfrog/jfrog-cli-v2:2.2.0'
+            reuseNode true } }
+	  when { anyOf {
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCommons/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMServices/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSInternalRequestComponents/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMAPPMASComponent/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSGenericServices/**"
+			changeset "CaseManagement/RapidCase/NGSOCREventHandler/**"
+			changeset "CaseManagement/RapidCase/NGSCMSupportProject/NGSCMDepartmentServices/**"
+			changeset "CaseManagement/RapidCase/NGSOCRService/**" 
+            } 
+            }
+      steps{
+            catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+            cleanWs(cleanWhenNotBuilt: false,
+                    deleteDirs: true,
+                    disableDeferredWipeout: true,
+                    notFailBuild: true)
+            sh 'rm -rf target/*'
+			unarchive mapping: ['target/*.zip' : '.']
+            sh ''' 
+            ls
+            ls -l target/
+            jfrog rt upload --url http://kyettsjenlx01v:8082/artifactory/ --access-token ${Artifactory_Token} "target/(*)" DCCM-ICM/FileNet/ '''
+        // Dynatrace Script to Push Events //
+		script
+        {
+            def status = event.pushDynatraceEvent   (
+              eventType: "CUSTOM_INFO",  
+              tagRule: tagMatchRules,
+              description:'This is WebSphere Auto Triggered Build',
+              //deploymentName: "${env.JOB_NAME}",
+              //deploymentVersion: "${env.BUILD_NUMBER}",
+              //deploymentProject: "myDeploymentProject",
+             // remediationAction: "myRemediationAction",
+              customProperties : [
+                  "Jenkins JOB_NAME": "${env.JOB_NAME}",
+                  "Jenkins BUILD_NUMBER": "${env.BUILD_NUMBER}",
+                  "Build Status": "${currentBuild.currentResult}",
+                  "Build Duration": "${currentBuild.durationString}"
+              ]
+            )
+            }        
+		}
+        }
+    }
+    }
+	}
